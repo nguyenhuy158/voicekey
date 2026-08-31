@@ -14,3 +14,5 @@ jobs:
         run: ./build.sh
       - name: Self-test
         run: ./VoiceKey.app/Contents/MacOS/VoiceKey --selftest
+      - name: Coverage
+        run: ./cov.sh

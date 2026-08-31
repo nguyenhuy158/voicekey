@@ -82,6 +82,47 @@ func runSelfTest() -> Never {
     // the AI step must never be able to lose the user's words
     check((try? aiClean("hello", model: "x", prompt: "y")) == nil, "aiClean without a key throws")
 
+    // config round-trips through disk (configURL is redirected by VOICEKEY_HOME)
+    try? FileManager.default.createDirectory(at: historyRoot, withIntermediateDirectories: true)
+    var w = Config()
+    w.model = "/round/trip.bin"
+    w.uiLanguage = "vi"
+    w.save()
+    check(Config.load().model == "/round/trip.bin", "config survives save and load")
+    try? FileManager.default.removeItem(at: configURL)
+    check(Config.load().model == Config().model, "a missing config file falls back to defaults")
+
+    check(w.lang(for: w.keyCode) == w.language && w.lang(for: w.keyCode2) == w.language2
+          && w.lang(for: -1) == nil, "each talk key maps to its own language")
+
+    check(comboName(9999, 0) == "key 9999", "an unknown key code still renders")
+
+    // UI language: explicit wins over the system, unknown strings pass through
+    let saved = Settings.shared.cfg.uiLanguage
+    Settings.shared.cfg.uiLanguage = "vi"
+    check(uiLang() == "vi" && T("Settings") == "Cài đặt", "vi picks the translation")
+    check(T("not a translated string") == "not a translated string", "untranslated text passes through")
+    Settings.shared.cfg.uiLanguage = "en"
+    check(uiLang() == "en" && T("Settings") == "Settings", "en keeps the English key")
+    Settings.shared.cfg.uiLanguage = "system"
+    check(["en", "vi"].contains(uiLang()), "system resolves to a real language")
+    Settings.shared.cfg.uiLanguage = saved
+
+    check(Audio.device(uid: "no-such-device") == nil, "an unknown mic uid resolves to nil")
+    if let first = Audio.inputs().first {
+        check(Audio.device(uid: first.uid) == first.id, "a known mic uid resolves to its device")
+    }
+
+    // the log truncates itself instead of growing forever
+    try? Data(repeating: 0x41, count: 1_100_000).write(to: logURL)
+    log("selftest")
+    var size = 1_100_000
+    for _ in 0..<50 where size > 1_000_000 {
+        usleep(20_000)
+        size = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? Int) as? Int ?? 0
+    }
+    check(size < 1_000_000, "the log is truncated once it passes 1MB")
+
     // history trimming keeps the newest entries
     let h = History.shared
     h.clear()
