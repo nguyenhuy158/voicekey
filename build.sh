@@ -3,17 +3,24 @@ set -e
 cd "$(dirname "$0")"
 
 APP="VoiceKey.app"
+# Stamp the build so the running app can say which commit it came from.
+VERSION="${VOICEKEY_VERSION:-1.0}"
+COMMIT="$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"
+BUILT="$(date +%Y-%m-%d)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>VoiceKey</string>
   <key>CFBundleExecutable</key><string>VoiceKey</string>
   <key>CFBundleIdentifier</key><string>local.voicekey</string>
-  <key>CFBundleVersion</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>VKCommit</key><string>$COMMIT</string>
+  <key>VKBuildDate</key><string>$BUILT</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>

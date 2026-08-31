@@ -20,6 +20,8 @@ let uiLanguages: [(String, String)] = [
 let viStrings: [String: String] = [
     // tabs / window
     "Account": "Tài khoản",
+    "Built": "Build ngày",
+    "Running commit": "Đang chạy commit",
     "or": "hoặc",
     "System": "Hệ thống",
     "Nothing recorded yet.\nHold your key and talk.": "Chưa ghi gì.\nGiữ phím của bạn và nói.",
