@@ -17,7 +17,7 @@ struct Config: Codable {
     var keyName2: String = "right ⌥"
     var language2: String = "vi"
 
-    var model: String = configDir.appendingPathComponent("models/ggml-base.en.bin").path
+    var model: String = configDir.appendingPathComponent("models/ggml-large-v3-turbo-q5_0.bin").path
     var whisper: String = "/opt/homebrew/bin/whisper-cli"
 
     // -1 = unbound. Hands-free taps once to start and once to stop.
