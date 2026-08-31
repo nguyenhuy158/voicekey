@@ -3,7 +3,17 @@
 Hold a key, talk, release — the transcript is typed into whatever app is focused.
 Local whisper.cpp, nothing leaves the machine.
 
-## Install
+## Download
+
+Grab the latest `VoiceKey-vX.Y.Z.zip` from
+[Releases](https://github.com/nguyenhuy158/voicekey/releases), unzip it into
+`/Applications`, and clear the quarantine flag once (the build is ad-hoc signed):
+
+    xattr -dr com.apple.quarantine /Applications/VoiceKey.app
+
+Then `./setup.sh` (or `brew install whisper-cpp` plus a model) for the engine.
+
+## Build from source
 
     ./setup.sh          # brew install whisper-cpp + download ggml-base.en (141MB)
     ./build.sh          # produces VoiceKey.app

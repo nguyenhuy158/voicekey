@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # build.sh stamps the app with git describe
+
+      - name: Build
+        env:
+          # v1.2.3 -> 1.2.3, so the tag is what About says.
+          VOICEKEY_VERSION: ${{ github.ref_name }}
+        run: |
+          export VOICEKEY_VERSION="${VOICEKEY_VERSION#v}"
+          ./build.sh
+
+      - name: Self-test
+        run: ./VoiceKey.app/Contents/MacOS/VoiceKey --selftest
+
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # ditto keeps the bundle's symlinks and resource forks; zip -r does not.
+          ditto -c -k --keepParent VoiceKey.app "VoiceKey-$TAG.zip"
+          shasum -a 256 "VoiceKey-$TAG.zip" > checksums.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<EOF
+          ## Install
+
+          1. Download \`VoiceKey-$TAG.zip\`, unzip, drag **VoiceKey.app** to \`/Applications\`.
+          2. The build is ad-hoc signed, so Gatekeeper quarantines it. Clear that once:
+
+                 xattr -dr com.apple.quarantine /Applications/VoiceKey.app
+
+          3. Install the engine and a model:
+
+                 brew install whisper-cpp
+                 curl -fL --create-dirs -o ~/.config/voicekey/models/ggml-base.en.bin \\
+                   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+
+          4. Launch it, then grant **Microphone** and **Accessibility** in
+             System Settings → Privacy & Security, and relaunch.
+
+          Check the setup any time with:
+
+                 /Applications/VoiceKey.app/Contents/MacOS/VoiceKey --checkperms
+
+          ## Checksums
+
+          \`\`\`
+          $(cat checksums.txt)
+          \`\`\`
+          EOF
+          gh release create "$TAG" \
+            "VoiceKey-$TAG.zip" checksums.txt \
+            --title "VoiceKey $TAG" \
+            --notes-file notes.md \
+            --generate-notes
