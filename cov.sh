@@ -9,7 +9,7 @@ set -e
 cd "$(dirname "$0")"
 OUT=".cov"
 MIN="${COV_MIN:-90}"          # pure-logic files
-MIN_ALL="${COV_MIN_ALL:-65}"  # whole app
+MIN_ALL="${COV_MIN_ALL:-72}"  # whole app
 GATED=(Core.swift L.swift Log.swift)
 # Every source but the icon generator, which is its own standalone script — so a
 # new file never silently drops out of the coverage build.

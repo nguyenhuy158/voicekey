@@ -140,7 +140,7 @@ func runSelfTest() -> Never {
     check(h.entries.last?.text == "line 5", "oldest entries dropped")
     h.clear()
 
-    MainActor.assumeIsolated { exerciseServices(); renderEveryScreen() }
+    MainActor.assumeIsolated { exerciseServices(); exerciseCore(); renderEveryScreen() }
 
     print("all passed")
     exit(0)
@@ -242,18 +242,173 @@ func runPermCheck() -> Never {
     a.buildMainMenu()
     a.buildMenu()
     a.setIcon("mic")
-    a.targetApp = "Slack"
+
+    Settings.shared.capture(1, code: 49, flags: [])
+    check(Settings.shared.cfg.keyCode == 49 && Settings.shared.capturingSlot == 0,
+          "capturing a key binds it and closes the slot")
+    Settings.shared.capture(2, code: 53, flags: [])
+    check(Settings.shared.cfg.keyCode2 != 53, "escape cancels the capture")
+}
+
+// MARK: the core, on fakes
+
+final class FakeAudio: AudioPort {
+    var isRecording = false
+    var onChunk: ((URL) -> Void)?
+    var failStart = false
+    /// Written for real, so the code under test can delete and measure it.
+    var wav: URL?
+    func start() throws {
+        if failStart { throw NSError(domain: "test", code: 1) }
+        let u = historyRoot.appendingPathComponent("clip-\(UUID().uuidString).wav")
+        try Data(count: 64).write(to: u)
+        wav = u
+        isRecording = true
+    }
+    func stop() -> URL? {
+        guard isRecording else { return nil }
+        isRecording = false
+        return wav
+    }
+}
+
+struct FakeSTT: TranscribePort {
+    var text = "hello there"
+    var error: Error?
+    func transcribe(_ wav: URL, lang: String, context: String?) throws -> String {
+        if let error { throw error }
+        return text
+    }
+}
+
+final class FakeText: TextPort {
+    var typed: [String] = []
+    var app: String? = "Slack"
+    func type(_ text: String, conceal: Bool) { typed.append(text) }
+    func selection() -> String? { nil }
+    func context() -> String? { "context" }
+    func frontApp() -> String? { app }
+}
+
+struct FakeAI: AIPort {
+    func clean(_ text: String, model: String, prompt: String) throws -> String { text }
+    func edit(selection: String, instruction: String, model: String) throws -> String { instruction }
+}
+
+final class FakeUI: FeedbackPort {
+    var icons: [String] = []
+    var alerts: [(String, String)] = []
+    func icon(_ symbol: String) { icons.append(symbol) }
+    func hud(_ state: HUDState, lang: String) {}
+    func hideHUD() {}
+    func sound(_ name: String) {}
+    func alert(_ title: String, _ message: String) { alerts.append((title, message)) }
+}
+
+final class FakeStore: StorePort {
+    var kept: [String] = []
+    var words = 0
+    func keep(audio: URL, text: String) { kept.append(text) }
+    func record(words n: Int, seconds: Double, app: String?) { words += n }
+}
+
+/// endTalk hops to streamQueue and back to main; with no NSApp running, the main
+/// queue only drains while the run loop turns. Pump it until `done` or we give up.
+func pump(_ seconds: Double = 3, until done: () -> Bool) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while !done() && Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+}
+
+/// A real, readable wav — enough for AVAudioFile to report a length.
+func makeWav(seconds: Double) -> URL {
+    let fmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000,
+                            channels: 1, interleaved: true)!
+    let u = historyRoot.appendingPathComponent("dur-\(UUID().uuidString).wav")
+    let f = try! AVAudioFile(forWriting: u, settings: fmt.settings,
+                             commonFormat: .pcmFormatInt16, interleaved: true)
+    let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(16000 * seconds))!
+    buf.frameLength = buf.frameCapacity
+    try! f.write(from: buf)
+    return u
+}
+
+@MainActor func exerciseCore() {
+    let wavURL = makeWav(seconds: 1)
+    check(abs(duration(wavURL) - 1) < 0.01, "a wav reports its length in seconds")
+    check(duration(historyRoot.appendingPathComponent("nope.wav")) == 0,
+          "an unreadable wav measures zero instead of crashing")
+
+    let audio = FakeAudio(), text = FakeText(), ui = FakeUI(), store = FakeStore()
+    func make(_ stt: FakeSTT = FakeSTT()) -> Dictation {
+        Dictation(audio: audio, stt: stt, text: text, ai: FakeAI(), ui: ui, store: store)
+    }
+    var d = make()
+
+    d.targetApp = "Slack"
     Settings.shared.cfg.casualMessaging = true
-    check(a.casual("Hello There") == "hello there", "chat apps get lowercase text")
+    check(d.casual("Hello There") == "hello there", "chat apps get lowercase text")
     Settings.shared.cfg.casualMessaging = false
-    check(a.casual("Hello There") == "Hello There", "everywhere else keeps the case")
+    check(d.casual("Hello There") == "Hello There", "everywhere else keeps the case")
     Settings.shared.cfg.appModesEnabled = true
-    check(a.promptForApp().hasSuffix(appMode("Slack")!.hint), "the app mode is appended to the prompt")
+    check(d.promptForApp().hasSuffix(appMode("Slack")!.hint), "the app mode is appended to the prompt")
     Settings.shared.cfg.appModesEnabled = false
-    check(a.promptForApp() == a.cfg.aiPrompt, "with modes off the prompt is untouched")
+    check(d.promptForApp() == d.cfg.aiPrompt, "with modes off the prompt is untouched")
 
     // a release with no press behind it must not leave state around
-    a.keyReleased(a.cfg.keyCode, "en")
-    a.cancelTalk(silent: true)
-    check(a.latchedCode == nil && a.pressedAt == nil, "cancel clears the latch")
+    d.keyReleased(d.cfg.keyCode, "en")
+    d.cancelTalk(silent: true)
+    check(d.latchedCode == nil && d.pressedAt == nil, "cancel clears the latch")
+
+    // a whole clip, end to end
+    Settings.shared.cfg.privacyMode = false
+    Settings.shared.cfg.aiEnabled = false
+    Settings.shared.cfg.streaming = "off"
+    d.beginTalk("en")
+    check(audio.isRecording && d.targetApp == "Slack", "begin records and pins the target app")
+    d.endTalk("en")
+    pump { !text.typed.isEmpty }
+    check(text.typed == ["hello there"], "the transcript is typed once")
+    check(store.kept == ["hello there"] && store.words == 2, "it lands in history and stats")
+    check(d.lastTranscript == "hello there", "and is remembered for paste-last")
+    text.typed = []
+    d.pasteLast()
+    check(text.typed == ["hello there"], "paste-last retypes it without recording")
+
+    // privacy mode: the audio goes, nothing is kept
+    Settings.shared.cfg.privacyMode = true
+    store.kept = []; text.typed = []
+    d.beginTalk("en")
+    let wav = audio.wav!
+    d.endTalk("en")
+    pump { !text.typed.isEmpty }
+    check(store.kept.isEmpty, "privacy mode keeps no history")
+    check(!FileManager.default.fileExists(atPath: wav.path), "and deletes the recording")
+    Settings.shared.cfg.privacyMode = false
+
+    // a chunk that finishes after its clip was cancelled must not paste
+    d.beginTalk("en")
+    let stale = d.clipID
+    d.cancelTalk(silent: true)
+    text.typed = []
+    d.streamChunk(audio.wav!, "en", stale)
+    pump(0.5) { !text.typed.isEmpty }
+    check(text.typed.isEmpty, "a chunk from a dead clip is dropped")
+
+    // failures reach the user instead of pasting nonsense
+    d = make(FakeSTT(error: TranscribeError.modelMissing("/nope/model.bin")))
+    ui.alerts = []; text.typed = []
+    d.beginTalk("en"); d.endTalk("en")
+    pump { !ui.alerts.isEmpty }
+    check(ui.alerts.first?.1.contains("/nope/model.bin") == true, "a missing model names the path")
+    check(text.typed.isEmpty, "and nothing is typed")
+    check(d.explain(TranscribeError.toolMissing("/nope/whisper")).1.contains("whisper-cpp"),
+          "a missing whisper-cli names the brew formula")
+
+    audio.failStart = true
+    ui.icons = []
+    d.beginTalk("en")
+    check(ui.icons.last == "exclamationmark.triangle", "a mic that won't start shows the warning icon")
+    audio.failStart = false
 }

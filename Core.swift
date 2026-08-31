@@ -258,14 +258,34 @@ enum Audio {
 
 /// whisper emits marker-only lines like "[BLANK_AUDIO]" or "(silence)" for empty clips.
 /// Drops those whole-line markers and joins the rest — a spoken "(like this)" must survive.
+/// Whisper was trained on YouTube subtitles, so near-silent audio makes it emit
+/// the outro its training data ends with. Nobody dictates these, so drop the line.
+let hallucinations = [
+    "subscribe", "đăng ký kênh", "ghiền mì gõ", "lala school",
+    "hẹn gặp lại các bạn", "cảm ơn các bạn đã theo dõi",
+    "thanks for watching", "thank you for watching",
+]
+
+private func isHallucination(_ line: String) -> Bool {
+    let l = line.lowercased()
+    return hallucinations.contains { l.contains($0) }
+}
+
 func cleanTranscript(_ raw: String) -> String {
     raw.split(separator: "\n")
         .map { $0.trimmingCharacters(in: .whitespaces) }
         .filter { !$0.isEmpty && $0.range(of: "^(\\[.*\\]|\\(.*\\))$",
                                           options: .regularExpression) == nil }
+        .filter { !isHallucination(String($0)) }
         .joined(separator: " ")
 }
 
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Length of a wav in seconds, or 0 if it can't be read — measured before
+/// Privacy Mode deletes the file out from under us.
+func duration(_ wav: URL) -> Double {
+    (try? AVAudioFile(forReading: wav)).map { Double($0.length) / $0.fileFormat.sampleRate } ?? 0
 }

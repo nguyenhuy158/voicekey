@@ -16,6 +16,23 @@ final class Settings: ObservableObject {
         onChange?()
     }
 
+    /// Bind a key to a slot (1/2 = talk, 3 = hands free, 4 = paste last).
+    /// Escape cancels. Called from the event tap once a key is caught.
+    func capture(_ slot: Int, code: Int64, flags: CGEventFlags) {
+        capturingSlot = 0
+        guard code != 53 else { return }        // escape = cancel
+        let name = keyNames[code] ?? "key \(code)"
+        switch slot {
+        case 1: cfg.keyCode = code;  cfg.keyName = name
+        case 2: cfg.keyCode2 = code; cfg.keyName2 = name
+        case 3: cfg.handsFreeKey = code; cfg.handsFreeName = name
+        default:
+            cfg.pasteLastKey = code
+            cfg.pasteLastFlags = flags.intersection(comboMask).rawValue
+        }
+        save()
+    }
+
     /// Login-item state lives in launchd, not our config file.
     var openAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
