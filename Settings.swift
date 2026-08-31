@@ -319,7 +319,8 @@ struct SettingsView: View {
                         options: models.map { ($0, ($0 as NSString).lastPathComponent) },
                         selection: bindStr(\.model))
                 if !FileManager.default.fileExists(atPath: s.cfg.model) {
-                    Label(T("Model file is missing — run ./setup.sh"), systemImage: "exclamationmark.triangle")
+                    Label(T("Model file is missing — use Install Engine & Model above."),
+                          systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 HStack {

@@ -1,5 +1,11 @@
 import Cocoa
 import AVFoundation
+import SwiftUI
+
+func check(_ ok: Bool, _ what: String) {
+    print(ok ? "ok   \(what)" : "FAIL \(what)")
+    if !ok { exit(1) }
+}
 
 /// Run with: ./VoiceKey.app/Contents/MacOS/VoiceKey --selftest
 /// Covers the two bits of real logic: transcript cleanup and history trimming.
@@ -7,11 +13,6 @@ func runSelfTest() -> Never {
     // Redirect history to a scratch dir BEFORE anything touches History.shared,
     // otherwise the test wipes the user's real recordings.
     setenv("VOICEKEY_HOME", NSTemporaryDirectory() + "voicekey-selftest", 1)
-
-    func check(_ ok: Bool, _ what: String) {
-        print(ok ? "ok   \(what)" : "FAIL \(what)")
-        if !ok { exit(1) }
-    }
 
     check(cleanTranscript("\n Hello Robert, this is a test.\n") == "Hello Robert, this is a test.",
           "trims whitespace and leading newline")
@@ -64,6 +65,10 @@ func runSelfTest() -> Never {
     check(st.lines == ["line 4", "line 3", "line 2"], "stream card keeps the 3 newest, newest first")
     st.clear()
     check(st.lines.isEmpty && !st.busy, "stream clears between clips")
+
+    // the in-app installer has to find tools without the user's PATH
+    check(Installer.find("env") == "/usr/bin/env", "find locates a tool in the standard prefixes")
+    check(Installer.find("definitely-not-a-real-tool") == nil, "find returns nil for a missing tool")
 
     check(isCasualApp("Slack") && isCasualApp("Discord Canary") && !isCasualApp("Xcode")
           && !isCasualApp(nil), "casual apps matched by name, case-insensitively")
@@ -135,6 +140,8 @@ func runSelfTest() -> Never {
     check(h.entries.last?.text == "line 5", "oldest entries dropped")
     h.clear()
 
+    MainActor.assumeIsolated { exerciseServices(); renderEveryScreen() }
+
     print("all passed")
     exit(0)
 }
@@ -168,4 +175,85 @@ func runPermCheck() -> Never {
          "model \((cfg.model as NSString).lastPathComponent)", "./setup.sh small")
     print("\nhold \(cfg.keyName) → \(cfg.language)   ·   hold \(cfg.keyName2) → \(cfg.language2)")
     exit(0)
+}
+
+/// Draws every screen once, offscreen. It asserts nothing about pixels: it is here
+/// so a view that crashes on empty data, a nil model or a missing file fails the
+/// build instead of the user's first launch.
+@MainActor func renderEveryScreen() {
+    _ = NSApplication.shared
+    @MainActor func render<V: View>(_ name: String, _ v: V) {
+        let r = ImageRenderer(content: v.frame(width: 820, height: 620))
+        print(r.nsImage == nil ? "FAIL render \(name)" : "ok   render \(name)")
+        if r.nsImage == nil { exit(1) }
+    }
+    render("main", MainView())
+    render("settings", SettingsView())
+    render("stats", StatsView())
+    render("account", AccountView())
+    render("history", HistoryView())
+    render("build stamp", BuildStamp())
+    render("stream card", StreamCard())
+    for s in [HUDState.idle, .listening, .transcribing, .streaming] {
+        render("hud \(s)", HUDView(state: s, lang: "en"))
+    }
+}
+
+/// The parts of the app that are objects rather than pure functions: the menu bar
+/// app, the HUD panel, the history store, the installer. Nothing here touches the
+/// mic, the event tap or the network — those need a real session, and a test that
+/// faked them would only be testing the fake.
+@MainActor func exerciseServices() {
+    _ = NSApplication.shared
+
+    // HUD: every state opens the panel, hide closes it
+    for s in [HUDState.idle, .listening, .transcribing, .streaming] {
+        HUD.shared.show(s, lang: "en")
+    }
+    HUD.shared.hide()
+    Meter.shared.push(0.5); Meter.shared.reset()
+    check(Meter.shared.samples.allSatisfy { $0 == 0 }, "the meter resets to silence")
+
+    // history: add, play a file that isn't there, delete, clear
+    let h = History.shared
+    h.clear()
+    let wav = historyDir.appendingPathComponent("smoke.wav")
+    try? FileManager.default.createDirectory(at: historyDir, withIntermediateDirectories: true)
+    try? Data("not audio".utf8).write(to: wav)
+    h.add(audio: wav, text: "smoke")
+    guard let e = h.entries.first else { return check(false, "history kept the entry") }
+    check(h.url(e).lastPathComponent == e.audio, "an entry resolves to its file")
+    h.toggle(e)                      // not a real wav: must fail without crashing
+    check(h.playing == nil, "unplayable audio leaves nothing playing")
+    h.stop()
+    h.delete(e)
+    check(h.entries.isEmpty, "deleting the last entry empties history")
+
+    // installer: cancel is safe with nothing running, and find works both ways
+    let i = Installer.shared
+    i.cancel()
+    check(!i.busy && i.progress == 0, "cancel leaves the installer idle")
+    check(downloadableModels.contains { $0.name == "large-v3-turbo-q5_0" },
+          "the default model is offered by the installer")
+
+    // the menu bar app, minus applicationDidFinishLaunching (that wants the event tap)
+    let a = App()
+    a.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    a.buildMainMenu()
+    a.buildMenu()
+    a.setIcon("mic")
+    a.targetApp = "Slack"
+    Settings.shared.cfg.casualMessaging = true
+    check(a.casual("Hello There") == "hello there", "chat apps get lowercase text")
+    Settings.shared.cfg.casualMessaging = false
+    check(a.casual("Hello There") == "Hello There", "everywhere else keeps the case")
+    Settings.shared.cfg.appModesEnabled = true
+    check(a.promptForApp().hasSuffix(appMode("Slack")!.hint), "the app mode is appended to the prompt")
+    Settings.shared.cfg.appModesEnabled = false
+    check(a.promptForApp() == a.cfg.aiPrompt, "with modes off the prompt is untouched")
+
+    // a release with no press behind it must not leave state around
+    a.keyReleased(a.cfg.keyCode, "en")
+    a.cancelTalk(silent: true)
+    check(a.latchedCode == nil && a.pressedAt == nil, "cancel clears the latch")
 }

@@ -10,8 +10,9 @@ cd "$(dirname "$0")"
 OUT=".cov"
 MIN="${COV_MIN:-90}"
 GATED=(Core.swift L.swift Log.swift)
-SRC=(main.swift Core.swift Log.swift L.swift AI.swift History.swift HUD.swift
-     Settings.swift Stats.swift Account.swift MainWindow.swift SelfTest.swift)
+# Every source but the icon generator, which is its own standalone script — so a
+# new file never silently drops out of the coverage build.
+SRC=(); for f in *.swift; do [ "$f" = MakeIcon.swift ] || SRC+=("$f"); done
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 swiftc -profile-generate -profile-coverage-mapping "${SRC[@]}" -o "$OUT/VoiceKey" \

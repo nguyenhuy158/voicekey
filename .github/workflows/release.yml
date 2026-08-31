@@ -47,18 +47,38 @@ jobs:
 
                  xattr -dr com.apple.quarantine /Applications/VoiceKey.app
 
-          3. Install the engine and a model:
-
-                 brew install whisper-cpp
-                 curl -fL --create-dirs -o ~/.config/voicekey/models/ggml-base.en.bin \\
-                   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
-
-          4. Launch it, then grant **Microphone** and **Accessibility** in
+          3. Launch it, then grant **Microphone** and **Accessibility** in
              System Settings → Privacy & Security, and relaunch.
+          4. Open **Settings → Setup** and hit **Install Engine & Model**. It installs
+             whisper-cpp through Homebrew and downloads the model for you.
 
           Check the setup any time with:
 
                  /Applications/VoiceKey.app/Contents/MacOS/VoiceKey --checkperms
+
+          ## How to use
+
+          VoiceKey lives in the menu bar (mic icon), there is no dock window.
+
+          - **Hold right ⌘, speak, release** — the text is typed into whatever app is
+            focused. Hold **right ⌥** for the second language (Vietnamese by default).
+          - **Double-tap** a talk key to latch recording on; tap again to stop, so you
+            don't have to hold it through a long paragraph.
+          - **Escape** while recording throws the clip away.
+          - **⌃⌘V** pastes the previous transcript again.
+          - The icon is the state: mic (idle) → waveform (recording) → hourglass (working).
+
+          Worth turning on in **Settings**:
+
+          - **Select to Edit** — highlight text, hold the key and say the change
+            ("make this shorter") to rewrite it in place.
+          - **Streaming Mode** — types each sentence as you pause instead of all of it
+            on release.
+          - **Deep Context** — feeds the text around your cursor to whisper so names and
+            jargon come out right.
+          - **Privacy Mode** — keeps audio, transcripts and cloud cleanup off entirely.
+
+          Both talk keys, the languages and every shortcut are rebindable in Settings.
 
           ## Checksums
 

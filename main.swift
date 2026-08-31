@@ -137,10 +137,29 @@ private func axString(_ el: AXUIElement, _ attr: String) -> String? {
     return s
 }
 
+/// Length of the current selection, or 0. Chrome and other web views happily
+/// report kAXSelectedText for an unselected field, so the *range* is what decides
+/// whether anything is really highlighted.
+private func selectionLength(_ el: AXUIElement) -> Int? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString,
+                                        &v) == .success else { return nil }
+    var range = CFRange()
+    guard AXValueGetValue(v as! AXValue, .cfRange, &range) else { return nil }
+    return range.length
+}
+
 /// Text the user has highlighted right now, if any.
 func selectedText() -> String? {
-    if let s = focusedElement().flatMap({ axString($0, kAXSelectedTextAttribute as String) })?
-        .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty { return s }
+    if let el = focusedElement(), let n = selectionLength(el) {
+        // The range is authoritative: 0 means nothing is highlighted, whatever
+        // kAXSelectedText claims. No point asking the clipboard either.
+        guard n > 0 else { log("selection: ax range=0, nothing highlighted"); return nil }
+        if let s = axString(el, kAXSelectedTextAttribute as String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty { return s }
+    }
+    // No range attribute at all (Electron) — the clipboard round-trip is the only
+    // way left, and it self-reports emptiness via changeCount.
     let copied = copiedSelection()
     log("selection: ax=nil clipboard=\(copied?.count.description ?? "nil")")
     return copied
@@ -183,8 +202,13 @@ func screenContext() -> String? {
     var parts: [String] = []
     if let app = NSWorkspace.shared.frontmostApplication?.localizedName { parts.append(app) }
     if let title = axString(el, kAXTitleAttribute as String) { parts.append(title) }
-    if let value = axString(el, kAXValueAttribute as String) { parts.append(String(value.suffix(600))) }
-    return parts.joined(separator: ". ").nilIfEmpty
+    // whisper's --prompt is a vocabulary hint, not a document. Feeding it a long
+    // dump (a terminal scrollback, say) makes it echo that text back and stutter,
+    // so keep only the words nearest the cursor.
+    if let value = axString(el, kAXValueAttribute as String) {
+        parts.append(value.split(separator: " ").suffix(30).joined(separator: " "))
+    }
+    return parts.joined(separator: ". ").prefix(220).trimmingCharacters(in: .whitespaces).nilIfEmpty
 }
 
 

@@ -32,7 +32,7 @@ PLIST
 [ -f AppIcon.icns ] || { swift MakeIcon.swift && iconutil -c icns AppIcon.iconset -o AppIcon.icns; }
 cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-swiftc -O main.swift Core.swift Log.swift L.swift AI.swift History.swift HUD.swift Settings.swift Stats.swift Account.swift MainWindow.swift SelfTest.swift -o "$APP/Contents/MacOS/VoiceKey" \
+swiftc -O main.swift Core.swift Log.swift L.swift AI.swift History.swift HUD.swift Settings.swift Stats.swift Account.swift MainWindow.swift Setup.swift SelfTest.swift -o "$APP/Contents/MacOS/VoiceKey" \
   -framework Cocoa -framework AVFoundation -framework SwiftUI
 
 # Ad-hoc sign so macOS keeps the granted permissions across rebuilds.
