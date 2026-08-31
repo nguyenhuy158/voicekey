@@ -1,14 +1,15 @@
 #!/bin/bash
 # Coverage for the selftest. Usage: ./cov.sh [--html]
 #
-# The gate covers the pure-logic files only. The rest of the app is AppKit and
-# SwiftUI driven by a real event loop, a real mic and a real whisper binary —
-# a headless --selftest run cannot reach it, and pretending otherwise would
-# just mean writing tests that assert nothing.
+# Two bars: the pure-logic files must stay near-total, the whole app must not
+# slide back. The app can't reach 100%: recording, whisper, the CGEvent tap and
+# the OpenRouter calls all need real hardware, real permissions and a network,
+# and faking them here would only test the fakes.
 set -e
 cd "$(dirname "$0")"
 OUT=".cov"
-MIN="${COV_MIN:-90}"
+MIN="${COV_MIN:-90}"          # pure-logic files
+MIN_ALL="${COV_MIN_ALL:-65}"  # whole app
 GATED=(Core.swift L.swift Log.swift)
 # Every source but the icon generator, which is its own standalone script — so a
 # new file never silently drops out of the coverage build.
@@ -31,11 +32,18 @@ if [ "$1" = "--html" ]; then
   echo "html: $OUT/html/index.html"
 fi
 
-# Gate on regions, functions and lines alike — line coverage on its own is the
-# easiest of the three to inflate.
+# The logic files are gated on all three numbers — line coverage alone is the
+# easiest to inflate. The whole app is gated on lines only: most of its missed
+# "regions" are SwiftUI branches that never run without a mouse.
+fail=0
 report "${GATED[@]}" | tail -1 | awk -v m="$MIN" '{
   gsub(/%/, "")
-  printf "gated coverage: regions %s%%  functions %s%%  lines %s%%  (min %s%%)\n", $4, $7, $10, m
-  if ($4+0 < m+0 || $7+0 < m+0 || $10+0 < m+0) { print "FAIL: below the coverage bar"; exit 1 }
-  print "ok"
-}'
+  printf "logic     : regions %s%%  functions %s%%  lines %s%%  (min %s%% each)\n", $4, $7, $10, m
+  exit ($4+0 < m+0 || $7+0 < m+0 || $10+0 < m+0)
+}' || fail=1
+report | tail -1 | awk -v m="$MIN_ALL" '{
+  gsub(/%/, "")
+  printf "whole app : regions %s%%  functions %s%%  lines %s%%  (min %s%% lines)\n", $4, $7, $10, m
+  exit ($10+0 < m+0)
+}' || fail=1
+[ "$fail" = 0 ] && echo ok || { echo "FAIL: below the coverage bar"; exit 1; }
