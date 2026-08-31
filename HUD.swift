@@ -21,6 +21,11 @@ final class Meter: ObservableObject {
 }
 
 enum HUDState { case idle, listening, transcribing }
+/// Transparent margin around each HUD so its shadow has room inside the panel.
+/// The panel clips anything drawn outside the view, and a clipped blur reads as a
+/// grey rectangle — so this must cover the shadow's radius plus its y offset.
+let hudPad = 20.0
+let streamPad = 28.0
 
 struct HUDView: View {
     let state: HUDState
@@ -69,7 +74,7 @@ struct HUDView: View {
                 .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 1))
         )
         .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
-        .padding(8)   // room for the shadow inside the panel
+        .padding(hudPad)
     }
 }
 
@@ -115,7 +120,12 @@ final class HUD {
         guard let screen = NSScreen.main else { return }
         let vf = screen.visibleFrame
         let size = p.frame.size
-        let y = state == .idle ? vf.minY + 10 : vf.maxY - size.height - 6
+        let y: CGFloat
+        switch state {
+        // Offsets are to the visible capsule, so discount the transparent padding.
+        case .idle:      y = vf.minY + 10 - hudPad
+        default:         y = vf.maxY - size.height - 6 + hudPad
+        }
         p.setFrameOrigin(CGPoint(x: vf.midX - size.width / 2, y: y))
     }
 }
