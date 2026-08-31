@@ -1,6 +1,10 @@
 import Cocoa
 import AVFoundation
 
+/// Serial: chunks must be typed in the order they were spoken.
+let streamQueue = DispatchQueue(label: "voicekey.stream")
+
+
 // ---------- config ----------
 
 let configDir = FileManager.default.homeDirectoryForCurrentUser
@@ -31,6 +35,19 @@ struct Config: Codable {
     var aiEnabled = false
     var aiModel = freeModels[0]
     var aiPrompt = defaultAIPrompt
+
+    /// CoreAudio device UID; empty = whatever macOS calls the default input.
+    var micUID = ""
+    /// Lowercase the transcript when dictating into a chat app.
+    var casualMessaging = false
+    /// Adapt AI cleanup to the app being dictated into (terminal, editor, chat, …).
+    var appModesEnabled = false
+    /// Feed the focused field's text to whisper as an initial prompt.
+    var deepContext = false
+    /// Dictate over a selection to rewrite it instead of replacing it verbatim.
+    var selectToEdit = false
+    /// "never" or "auto" — auto types each sentence as you pause, mid-clip.
+    var streaming = "never"
 
     var floatingBar = false
     var playSounds = true
@@ -68,6 +85,12 @@ struct Config: Codable {
         aiEnabled = f(.aiEnabled, d.aiEnabled)
         aiModel = f(.aiModel, d.aiModel)
         aiPrompt = f(.aiPrompt, d.aiPrompt)
+        micUID = f(.micUID, d.micUID)
+        casualMessaging = f(.casualMessaging, d.casualMessaging)
+        appModesEnabled = f(.appModesEnabled, d.appModesEnabled)
+        deepContext = f(.deepContext, d.deepContext)
+        selectToEdit = f(.selectToEdit, d.selectToEdit)
+        streaming = f(.streaming, d.streaming)
         floatingBar = f(.floatingBar, d.floatingBar)
         playSounds = f(.playSounds, d.playSounds)
         avoidClipboardHistory = f(.avoidClipboardHistory, d.avoidClipboardHistory)
@@ -138,6 +161,96 @@ func tapAction(latched: Bool, enabled: Bool, held: Double, sinceLastTap: Double?
     return .discard
 }
 
+/// Apps where sentence case reads as shouting. Matched loosely on the app name.
+let casualApps = ["slack", "messages", "imessage", "discord", "telegram", "whatsapp",
+                  "messenger", "zalo", "signal", "teams"]
+
+func isCasualApp(_ name: String?) -> Bool {
+    guard let n = name?.lowercased() else { return false }
+    return casualApps.contains { n.contains($0) }
+}
+
+// ---------- app-specific modes ----------
+
+/// Dictating into a terminal, an editor and a Slack thread want different text.
+/// The mode is a line appended to the AI cleanup prompt — no separate transport,
+/// no per-app engine. Matched loosely on the frontmost app's name, first hit wins.
+let appModes: [(name: String, apps: [String], hint: String)] = [
+    ("Terminal", ["terminal", "iterm", "warp", "ghostty", "alacritty", "kitty", "wezterm"],
+     "The text is a shell command. Output it as a single command line: no sentence capitalisation, no trailing full stop, flags keep their dashes, paths and file names stay verbatim."),
+    ("Editor", ["cursor", "code", "xcode", "zed", "sublime", "jetbrains", "intellij",
+                "pycharm", "webstorm", "goland", "android studio", "neovim", "nvim"],
+     "The text is written to a code editor. Keep identifiers, file names, APIs and symbols exactly as spoken, in English; do not capitalise them as prose."),
+    ("Chat", casualApps,
+     "The text is a chat message. Keep it short and informal, no sentence-final full stop, no formal rewording."),
+    ("Prompt", ["chatgpt", "claude", "gemini", "perplexity", "copilot", "grok"],
+     "The text is a prompt to an AI assistant. Keep the instruction intact and imperative; do not answer it, soften it, or add pleasantries."),
+    ("Browser", ["safari", "chrome", "firefox", "arc", "edge", "brave", "orion", "vivaldi"],
+     "The text is typed into a web page. Plain prose, standard punctuation, no markdown."),
+]
+
+/// Which mode an app name falls into, if any. Editor before Browser matters:
+/// "Visual Studio Code" contains "code", and Chrome-based editors exist.
+func appMode(_ name: String?) -> (name: String, apps: [String], hint: String)? {
+    guard let n = name?.lowercased() else { return nil }
+    return appModes.first { $0.apps.contains { n.contains($0) } }
+}
+
+// ---------- audio devices ----------
+
+/// CoreAudio input devices. UID is stable across reboots and unplugs; the numeric
+/// AudioDeviceID is not, so config stores the UID.
+struct Mic: Identifiable, Hashable {
+    let id: AudioDeviceID, uid: String, name: String
+}
+
+enum Audio {
+    static func inputs() -> [Mic] {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                             &addr, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids.filter(hasInput).map { Mic(id: $0, uid: string($0, kAudioDevicePropertyDeviceUID) ?? "",
+                                              name: string($0, kAudioObjectPropertyName) ?? "?") }
+    }
+
+    /// A device with no input streams is a speaker, not a mic.
+    private static func hasInput(_ id: AudioDeviceID) -> Bool {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                              mScope: kAudioDevicePropertyScopeInput,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0 else { return false }
+        let buf = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
+        defer { buf.deallocate() }
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, buf) == noErr else { return false }
+        let list = buf.assumingMemoryBound(to: AudioBufferList.self)
+        return UnsafeMutableAudioBufferListPointer(list).contains { $0.mNumberChannels > 0 }
+    }
+
+    private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
+        var addr = AudioObjectPropertyAddress(mSelector: selector,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<CFString>.size)
+        var out = "" as CFString
+        let ok = withUnsafeMutablePointer(to: &out) {
+            AudioObjectGetPropertyData(id, &addr, 0, nil, &size, $0) == noErr
+        }
+        return ok ? out as String : nil
+    }
+
+    static func device(uid: String) -> AudioDeviceID? {
+        inputs().first { $0.uid == uid }?.id
+    }
+}
+
 // ---------- recorder ----------
 
 final class Recorder {
@@ -148,11 +261,44 @@ final class Recorder {
 
     private(set) var url = historyDir.appendingPathComponent("voicekey.wav")
 
+    /// Set to stream: called off the main thread with each finished chunk while the
+    /// key is still held. nil = one wav for the whole clip (the classic path).
+    var onChunk: ((URL) -> Void)?
+    private var outFormat: AVAudioFormat?
+    private var chunkFrames: Int64 = 0
+    private var silentFrames: Int64 = 0
+    /// Cut only at a pause — mid-word cuts are what make chunked whisper sound drunk.
+    private let minChunk: Int64 = 16000 * 3, silenceToCut: Int64 = 16000 / 2
+    private let silenceRMS: Float = 0.012
+
+    private func newFile() throws {
+        url = historyDir.appendingPathComponent("\(Int(Date().timeIntervalSince1970 * 1000)).wav")
+        file = try AVAudioFile(forWriting: url, settings: outFormat!.settings,
+                               commonFormat: .pcmFormatInt16, interleaved: true)
+        chunkFrames = 0; silentFrames = 0
+    }
+
+    /// Closes the current chunk at a silence and hands it over, then opens the next.
+    private func rotate() {
+        guard let onChunk, chunkFrames >= minChunk, silentFrames >= silenceToCut else { return }
+        let done = url
+        file = nil
+        guard (try? newFile()) != nil else { return }
+        onChunk(done)
+    }
+
     func start() throws {
         guard !isRecording else { return }
         try? FileManager.default.createDirectory(at: historyDir, withIntermediateDirectories: true)
         url = historyDir.appendingPathComponent("\(Int(Date().timeIntervalSince1970 * 1000)).wav")
         let input = engine.inputNode
+        // Must be set before the format is read — the node re-tags itself on device change.
+        let micUID = Settings.shared.cfg.micUID
+        if !micUID.isEmpty, let dev = Audio.device(uid: micUID), let unit = input.audioUnit {
+            var id = dev
+            AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                 kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+        }
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0 else { throw NSError(domain: "voicekey", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "no audio input device"]) }
@@ -161,8 +307,10 @@ final class Recorder {
         let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000,
                                       channels: 1, interleaved: true)!
         converter = AVAudioConverter(from: inFormat, to: outFormat)
+        self.outFormat = outFormat
         file = try AVAudioFile(forWriting: url, settings: outFormat.settings,
                                commonFormat: .pcmFormatInt16, interleaved: true)
+        chunkFrames = 0; silentFrames = 0
 
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buf, _ in
             guard let self, let conv = self.converter, let file = self.file else { return }
@@ -183,6 +331,13 @@ final class Recorder {
                 for i in 0..<Int(buf.frameLength) { sum += ch[i] * ch[i] }
                 let rms = (sum / Float(buf.frameLength)).squareRoot()
                 DispatchQueue.main.async { Meter.shared.push(rms) }
+
+                if self.onChunk != nil {
+                    let n = Int64(out.frameLength)
+                    self.chunkFrames += n
+                    self.silentFrames = rms < self.silenceRMS ? self.silentFrames + n : 0
+                    self.rotate()
+                }
             }
         }
         engine.prepare()
@@ -216,6 +371,79 @@ func cleanTranscript(_ raw: String) -> String {
         .filter { !$0.isEmpty && $0.range(of: "^(\\[.*\\]|\\(.*\\))$",
                                           options: .regularExpression) == nil }
         .joined(separator: " ")
+}
+
+// ---------- accessibility reads ----------
+
+/// The focused text field of the frontmost app, via the same Accessibility
+/// permission we already need to paste. Nothing here is stored or sent anywhere
+/// except (for Deep Context) the local whisper process.
+private func focusedElement() -> AXUIElement? {
+    guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
+    var el: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                                        kAXFocusedUIElementAttribute as CFString, &el) == .success
+    else { return nil }
+    return (el as! AXUIElement)
+}
+
+private func axString(_ el: AXUIElement, _ attr: String) -> String? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, attr as CFString, &v) == .success,
+          let s = v as? String, !s.isEmpty else { return nil }
+    return s
+}
+
+/// Text the user has highlighted right now, if any.
+func selectedText() -> String? {
+    if let s = focusedElement().flatMap({ axString($0, kAXSelectedTextAttribute as String) })?
+        .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty { return s }
+    return copiedSelection()
+}
+
+/// Electron apps (VS Code, Slack, Discord) don't publish kAXSelectedTextAttribute,
+/// so fall back to a synthetic \u{2318}C. The pasteboard is cleared first: copying with
+/// nothing selected leaves changeCount untouched, which is how we tell an empty
+/// selection from a stale clipboard.
+private func copiedSelection() -> String? {
+    let pb = NSPasteboard.general
+    let saved = pb.string(forType: .string)
+    let before = pb.clearContents()
+
+    let src = CGEventSource(stateID: .combinedSessionState)
+    let down = CGEvent(keyboardEventSource: src, virtualKey: 8, keyDown: true)   // c
+    let up = CGEvent(keyboardEventSource: src, virtualKey: 8, keyDown: false)
+    // Explicit flags — the talk key is physically held down right now.
+    down?.flags = .maskCommand
+    up?.flags = .maskCommand
+    down?.post(tap: .cghidEventTap)
+    up?.post(tap: .cghidEventTap)
+
+    // The target app copies asynchronously; give it up to 300ms.
+    var text: String?
+    for _ in 0..<20 {
+        usleep(15_000)
+        if pb.changeCount != before { text = pb.string(forType: .string); break }
+    }
+    pb.clearContents()
+    if let saved { pb.setString(saved, forType: .string) }
+    return text?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+}
+
+/// A short sample of what's on screen around the cursor, used as whisper's initial
+/// prompt so names and jargon already in the document get transcribed correctly.
+/// whisper only keeps ~224 tokens of prompt, so send the tail, not the whole doc.
+func screenContext() -> String? {
+    guard let el = focusedElement() else { return nil }
+    var parts: [String] = []
+    if let app = NSWorkspace.shared.frontmostApplication?.localizedName { parts.append(app) }
+    if let title = axString(el, kAXTitleAttribute as String) { parts.append(title) }
+    if let value = axString(el, kAXValueAttribute as String) { parts.append(String(value.suffix(600))) }
+    return parts.joined(separator: ". ").nilIfEmpty
+}
+
+extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 // ---------- text insertion ----------
@@ -263,6 +491,10 @@ final class App: NSObject, NSApplicationDelegate {
     var lastTapAt: Date?         // when the previous short tap ended
     var lastTranscript = ""
     var targetApp: String?
+    /// Text that was highlighted when the key went down — Select to Edit rewrites it.
+    var editing: String?
+    /// Deep Context sample of the focused field, fed to whisper as an initial prompt.
+    var context: String?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -525,6 +757,17 @@ final class App: NSObject, NSApplicationDelegate {
     func beginTalk(_ lang: String) {
         // Grab it now — after we paste, the frontmost app may have changed.
         targetApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        // Same reason: the selection and the field contents must be read before we type.
+        editing = cfg.selectToEdit ? selectedText() : nil
+        context = cfg.deepContext ? screenContext() : nil
+        // Streaming needs one fixed language; with auto-detect whisper can flip
+        // language between chunks, and editing needs the whole instruction at once.
+        // onChunk fires on the audio render thread; whisper takes seconds, and blocking
+        // there stalls recording and drops the rest of the clip. Hop off it first.
+        rec.onChunk = (cfg.streaming == "auto" && lang != "auto" && editing == nil)
+            ? { [weak self] wav in
+                  streamQueue.async { self?.streamChunk(wav, lang) }
+              } : nil
         do {
             try rec.start()
             setIcon("waveform")
@@ -538,21 +781,77 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A mid-clip chunk: transcribe and type it right away, so long dictations land
+    /// sentence by sentence instead of all at the end. Runs off the main thread.
+    func streamChunk(_ wav: URL, _ lang: String) {
+        DispatchQueue.main.async {
+            Stream.shared.busy = true
+            HUD.shared.show(.streaming, lang: lang)
+        }
+        let text = transcribe(wav, lang)
+        DispatchQueue.main.async {
+            Stream.shared.busy = false
+            if self.cfg.privacyMode { try? FileManager.default.removeItem(at: wav) }
+            else { History.shared.add(audio: wav, text: text) }
+            guard !text.isEmpty else { return }
+            let out = self.casual(text) + " "
+            StatStore.shared.record(words: text.split(separator: " ").count,
+                                    seconds: 0, app: self.targetApp)
+            self.lastTranscript = out
+            typeText(out, conceal: self.cfg.avoidClipboardHistory)
+            Stream.shared.push(out.trimmingCharacters(in: .whitespaces))
+            HUD.shared.show(.streaming, lang: lang)
+        }
+    }
+
+    /// The cleanup prompt for whatever app we're dictating into.
+    func promptForApp() -> String {
+        guard cfg.appModesEnabled, let m = appMode(targetApp) else { return cfg.aiPrompt }
+        return cfg.aiPrompt + "\n\n" + m.hint
+    }
+
+    func casual(_ t: String) -> String {
+        cfg.casualMessaging && isCasualApp(targetApp) ? t.lowercased() : t
+    }
+
     func endTalk(_ lang: String) {
-        guard let wav = rec.stop() else { setIcon("mic"); HUD.shared.hide(); return }
+        rec.onChunk = nil
+        guard let wav = rec.stop() else {
+            setIcon("mic"); Stream.shared.clear(); HUD.shared.hide(); return
+        }
         setIcon("hourglass")
-        HUD.shared.show(.transcribing, lang: lang)
+        // Mid-stream the card is already up; swapping it for the capsule just flickers.
+        if Stream.shared.lines.isEmpty {
+            HUD.shared.show(.transcribing, lang: lang)
+        } else {
+            Stream.shared.busy = true
+            HUD.shared.show(.streaming, lang: lang)
+        }
         // Measure before Privacy Mode deletes the file out from under us.
         let secs = (try? AVAudioFile(forReading: wav)).map {
             Double($0.length) / $0.fileFormat.sampleRate } ?? 0
         DispatchQueue.global(qos: .userInitiated).async {
             var text = self.transcribe(wav, lang)
-            // Privacy Mode means nothing leaves the Mac, so it wins over AI cleanup.
-            if self.cfg.aiEnabled && !self.cfg.privacyMode && !text.isEmpty {
-                do { text = try aiClean(text, model: self.cfg.aiModel, prompt: self.cfg.aiPrompt) }
+            // Select to Edit: the words were an instruction, not the text to insert.
+            // Privacy Mode keeps the selection on the Mac, so it falls back to a paste.
+            if let sel = self.editing, !text.isEmpty, !self.cfg.privacyMode {
+                do { text = try aiEdit(selection: sel, instruction: text, model: self.cfg.aiModel) }
+                catch {
+                    // Pasting the raw instruction would eat the selection — do nothing instead.
+                    NSLog("select-to-edit failed: \(error.localizedDescription)")
+                    DispatchQueue.main.async {
+                        self.setIcon("mic"); HUD.shared.hide()
+                        self.alert(T("Edit failed"), error.localizedDescription)
+                        try? FileManager.default.removeItem(at: wav)
+                    }
+                    return
+                }
+            } else if self.cfg.aiEnabled && !self.cfg.privacyMode && !text.isEmpty {
+                // Privacy Mode means nothing leaves the Mac, so it wins over AI cleanup.
+                do { text = try aiClean(text, model: self.cfg.aiModel, prompt: self.promptForApp()) }
                 catch { NSLog("ai cleanup skipped: \(error.localizedDescription)") }
             }
-            let final = text
+            let final = self.editing == nil ? self.casual(text) : text
             DispatchQueue.main.async {
                 self.setIcon("mic")
                 HUD.shared.hide()
@@ -584,6 +883,7 @@ final class App: NSObject, NSApplicationDelegate {
         p.executableURL = URL(fileURLWithPath: cfg.whisper)
         p.arguments = ["-m", cfg.model, "-f", wav.path, "-l", lang,
                        "-nt", "-np", "--no-prints", "-t", "4"]
+        if let context { p.arguments! += ["--prompt", context] }
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice

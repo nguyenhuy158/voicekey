@@ -20,12 +20,59 @@ final class Meter: ObservableObject {
     func reset() { samples = [Float](repeating: 0, count: Meter.bars) }
 }
 
-enum HUDState { case idle, listening, transcribing }
+enum HUDState { case idle, listening, transcribing, streaming }
+
 /// Transparent margin around each HUD so its shadow has room inside the panel.
 /// The panel clips anything drawn outside the view, and a clipped blur reads as a
 /// grey rectangle — so this must cover the shadow's radius plus its y offset.
 let hudPad = 20.0
 let streamPad = 28.0
+
+/// Sentences already typed during a streamed clip, newest first. Text only lives
+/// here until the clip ends — Privacy Mode never sees a file.
+final class Stream: ObservableObject {
+    static let shared = Stream()
+    static let keep = 3
+
+    @Published private(set) var lines: [String] = []
+    @Published var busy = false
+
+    func push(_ line: String) {
+        lines = Array(([line] + lines).prefix(Stream.keep))
+    }
+    func clear() { lines = []; busy = false }
+}
+
+/// The streamed sentences, newest on top and fully legible, older ones fading back.
+struct StreamCard: View {
+    @ObservedObject var stream = Stream.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(stream.lines.enumerated()), id: \.offset) { i, line in
+                Text(line)
+                    .font(.system(size: i == 0 ? 21 : 18, weight: i == 0 ? .semibold : .regular))
+                    .foregroundStyle(.white.opacity(i == 0 ? 1 : 0.35))
+                    .blur(radius: i == 0 ? 0 : CGFloat(i) * 1.6)
+                    .lineLimit(2)
+            }
+            if stream.busy {
+                ProgressView().controlSize(.small).colorScheme(.dark)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+        .frame(width: 620, alignment: .leading)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
+        .background(
+            RoundedRectangle(cornerRadius: 28).fill(Color.black.opacity(0.92))
+                .overlay(RoundedRectangle(cornerRadius: 28).stroke(.white.opacity(0.1), lineWidth: 1))
+        )
+        .shadow(color: .black.opacity(0.45), radius: 20, y: 6)
+        .padding(streamPad)
+        .animation(.easeOut(duration: 0.18), value: stream.lines)
+    }
+}
 
 struct HUDView: View {
     let state: HUDState
@@ -83,7 +130,9 @@ final class HUD {
     private var panel: NSPanel?
 
     func show(_ state: HUDState, lang: String) {
-        let view = NSHostingView(rootView: HUDView(state: state, lang: lang))
+        let view: NSView = state == .streaming
+            ? NSHostingView(rootView: StreamCard())
+            : NSHostingView(rootView: HUDView(state: state, lang: lang))
         view.frame.size = view.fittingSize
 
         let p = panel ?? makePanel()
@@ -97,6 +146,7 @@ final class HUD {
     /// "Hidden" means back to the floating bar when it's enabled, otherwise gone.
     func hide() {
         Meter.shared.reset()
+        Stream.shared.clear()
         if Settings.shared.cfg.floatingBar { show(.idle, lang: "") }
         else { panel?.orderOut(nil) }
     }
@@ -124,6 +174,7 @@ final class HUD {
         switch state {
         // Offsets are to the visible capsule, so discount the transparent padding.
         case .idle:      y = vf.minY + 10 - hudPad
+        case .streaming: y = vf.minY + vf.height * 0.22      // sits over your work, not the menu bar
         default:         y = vf.maxY - size.height - 6 + hudPad
         }
         p.setFrameOrigin(CGPoint(x: vf.midX - size.width / 2, y: y))

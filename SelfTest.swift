@@ -28,6 +28,22 @@ func runSelfTest() -> Never {
     check(c.model == "/m.bin" && c.keyCode == 54, "old config keeps its values")
     check(c.language2 == "vi" && c.playSounds, "missing keys fall back to defaults")
 
+    check(c.streaming == "never" && !c.deepContext && !c.selectToEdit && c.micUID.isEmpty,
+          "new settings default off in an old config file")
+    check((try? aiEdit(selection: "a", instruction: "b", model: "x")) == nil,
+          "aiEdit without a key throws instead of eating the selection")
+    check("".nilIfEmpty == nil && "x".nilIfEmpty == "x", "nilIfEmpty")
+
+    // app-specific modes: loose name match, editor wins over browser for "Code"
+    check(appMode("iTerm2")?.name == "Terminal", "iTerm is a terminal")
+    check(appMode("Cursor")?.name == "Editor", "Cursor is an editor")
+    check(appMode("Visual Studio Code")?.name == "Editor", "VS Code is an editor, not a browser")
+    check(appMode("Slack")?.name == "Chat", "Slack is chat")
+    check(appMode("ChatGPT")?.name == "Prompt", "ChatGPT gets the prompt mode")
+    check(appMode("Google Chrome")?.name == "Browser", "Chrome is a browser")
+    check(appMode("Preview") == nil && appMode(nil) == nil, "unknown apps have no mode")
+    check(!c.appModesEnabled, "app modes default off in an old config file")
+
     // double-tap latch: tap → discard, quick second tap → latch, next tap → transcribe
     check(tapAction(latched: false, enabled: true, held: 0.1, sinceLastTap: nil) == .discard,
           "a lone short tap is thrown away")
@@ -41,11 +57,30 @@ func runSelfTest() -> Never {
           "a real hold still transcribes, even right after a tap")
     check(tapAction(latched: false, enabled: false, held: 0.1, sinceLastTap: 0.2) == .transcribe,
           "with latching off every release transcribes")
+
+    // the streaming card shows the newest line first and forgets the rest
+    let st = Stream.shared
+    for i in 0..<5 { st.push("line \(i)") }
+    check(st.lines == ["line 4", "line 3", "line 2"], "stream card keeps the 3 newest, newest first")
+    st.clear()
+    check(st.lines.isEmpty && !st.busy, "stream clears between clips")
+
+    check(isCasualApp("Slack") && isCasualApp("Discord Canary") && !isCasualApp("Xcode")
+          && !isCasualApp(nil), "casual apps matched by name, case-insensitively")
+
+    // every real Mac has at least the built-in mic, and each entry needs a usable UID
+    let mics = Audio.inputs()
+    check(!mics.isEmpty && mics.allSatisfy { !$0.uid.isEmpty && !$0.name.isEmpty },
+          "input devices enumerate with uid and name")
+
     check(comboName(9,CGEventFlags([.maskCommand, .maskControl]).rawValue) == "⌃⌘V",
           "combo renders modifiers in Apple's order")
 
     check(shortDuration(45) == "45s" && shortDuration(511) == "8m 31s"
           && shortDuration(3700) == "1h 1m", "duration formats by magnitude")
+
+    // the AI step must never be able to lose the user's words
+    check((try? aiClean("hello", model: "x", prompt: "y")) == nil, "aiClean without a key throws")
 
     // history trimming keeps the newest entries
     let h = History.shared

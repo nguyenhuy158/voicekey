@@ -89,8 +89,69 @@ struct KeyRow: View {
                 ForEach(languages, id: \.0) { Text($0.1).tag($0.0) }
             }
             .labelsHidden()
-            .frame(width: 150)
+            .pickerStyle(.menu)
+            .frame(width: 200)
         }
+    }
+}
+
+/// A label (+ optional icon/note) with a full-width dropdown underneath.
+/// Built from Menu, not Picker: the stock macOS pop-up bezel shrinks to its
+/// content and reads as invisible inside a grouped Form.
+struct DropRow: View {
+    var icon: String? = nil
+    let title: String
+    var note: String? = nil
+    /// (value, display label) — order is the menu order.
+    let options: [(String, String)]
+    @Binding var selection: String
+    var enabled = true
+
+    private var currentLabel: String {
+        options.first { $0.0 == selection }?.1 ?? selection
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                if let icon { Image(systemName: icon).frame(width: 20).foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    if let note {
+                        Text(note).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            Menu {
+                ForEach(options, id: \.0) { opt in
+                    Button {
+                        selection = opt.0
+                    } label: {
+                        if opt.0 == selection { Label(opt.1, systemImage: "checkmark") }
+                        else { Text(opt.1) }
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(currentLabel).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.15)))
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .disabled(!enabled)
+            .opacity(enabled ? 1 : 0.5)
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -140,9 +201,43 @@ struct SettingsView: View {
         return Array(Set(found + [s.cfg.model])).sorted()
     }
 
+    /// Auto-detect can change language between chunks, so streaming is off there.
+    var streamingNote: String {
+        s.cfg.language == "auto"
+            ? T("Streaming is disabled when language is set to Auto-detect.")
+            : T("Type each sentence as you pause, instead of all of it on release.")
+    }
+
+    @State private var mics = Audio.inputs()
+    @State private var micTest = false
+    @State private var testRec = Recorder()
+    @State private var testSound: NSSound?
+
+    /// Records a couple of seconds off the selected device and plays it straight back,
+    /// so a dead or wrong mic is obvious before you dictate into it.
+    func startMicTest() {
+        do { try testRec.start() } catch { return }
+        micTest = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if micTest { stopMicTest() }
+        }
+    }
+
+    func stopMicTest() {
+        micTest = false
+        guard let wav = testRec.stop() else { return }
+        testSound = NSSound(contentsOf: wav, byReference: false)
+        testSound?.play()
+        // Keep it out of History and off disk; the playback holds its own copy.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            try? FileManager.default.removeItem(at: wav)
+        }
+    }
+
     @State private var apiKey = Keychain.get()
     @State private var testing = false
     @State private var testResult = ""
+    @State private var models_ai = freeModels
 
     func bindStr(_ path: WritableKeyPath<Config, String>) -> Binding<String> {
         Binding(get: { s.cfg[keyPath: path] }, set: { s.cfg[keyPath: path] = $0; s.save() })
@@ -169,6 +264,30 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section(T("Microphone")) {
+                HStack(spacing: 8) {
+                    Image(systemName: "mic").frame(width: 20).foregroundStyle(.secondary)
+                    Picker("", selection: Binding(
+                        get: { s.cfg.micUID }, set: { s.cfg.micUID = $0; s.save() })) {
+                        Text(T("Default")).tag("")
+                        ForEach(mics) { Text($0.name).tag($0.uid) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    Button {
+                        micTest ? stopMicTest() : startMicTest()
+                    } label: {
+                        Label(micTest ? T("Stop") : T("Test"), systemImage: "speaker.wave.2")
+                    }
+                    Button { mics = Audio.inputs() } label: { Image(systemName: "arrow.clockwise") }
+                        .help(T("Rescan devices"))
+                }
+                if micTest {
+                    Text(T("Recording 2s — it plays back when it stops."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             Section(T("Hold to talk")) {
                 KeyRow(title: T("Key 1"), slot: 1)
                 KeyRow(title: T("Key 2"), slot: 2)
@@ -195,12 +314,9 @@ struct SettingsView: View {
             }
 
             Section(T("Model")) {
-                Picker(T("Whisper model"), selection: Binding(
-                    get: { s.cfg.model }, set: { s.cfg.model = $0; s.save() })) {
-                    ForEach(models, id: \.self) {
-                        Text(($0 as NSString).lastPathComponent).tag($0)
-                    }
-                }
+                DropRow(title: T("Whisper model"),
+                        options: models.map { ($0, ($0 as NSString).lastPathComponent) },
+                        selection: bindStr(\.model))
                 if !FileManager.default.fileExists(atPath: s.cfg.model) {
                     Label(T("Model file is missing — run ./setup.sh"), systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -218,22 +334,10 @@ struct SettingsView: View {
             }
 
             Section(T("System")) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "globe").frame(width: 20).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(T("Interface Language"))
-                        Text(T("Language of the VoiceKey window and menus."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Picker("", selection: Binding(
-                        get: { s.cfg.uiLanguage },
-                        set: { s.cfg.uiLanguage = $0; s.save() })) {
-                        ForEach(uiLanguages, id: \.0) { Text(T($0.1)).tag($0.0) }
-                    }
-                    .labelsHidden().frame(width: 130)
-                }
-                .padding(.vertical, 2)
+                DropRow(icon: "globe", title: T("Interface Language"),
+                        note: T("Language of the VoiceKey window and menus."),
+                        options: uiLanguages.map { ($0.0, T($0.1)) },
+                        selection: bindStr(\.uiLanguage))
 
                 ToggleRow(icon: "rectangle.bottomthird.inset.filled",
                           title: T("Show Floating Bar"),
@@ -245,6 +349,24 @@ struct SettingsView: View {
                 ToggleRow(icon: "clipboard", title: T("Avoid Clipboard History"),
                           note: T("Marks the paste as concealed so clipboard managers skip it."),
                           on: bind(\.avoidClipboardHistory))
+                ToggleRow(icon: "brain", title: T("Deep Context"),
+                          note: T("Use text from the field you're typing into to boost accuracy. Context stays on your Mac and is not stored."),
+                          on: bind(\.deepContext))
+                ToggleRow(icon: "square.and.pencil", title: T("Select to Edit"),
+                          note: "\(T("Select text, hold")) \(s.cfg.keyName), \(T("then say the change to edit it in place. Needs an API key."))",
+                          on: bind(\.selectToEdit))
+
+                DropRow(icon: "water.waves", title: T("Streaming Mode"), note: streamingNote,
+                        options: [("never", T("Never")), ("auto", T("Auto"))],
+                        selection: bindStr(\.streaming),
+                        enabled: s.cfg.language != "auto")
+
+                ToggleRow(icon: "bubble.left", title: T("Casual Messaging"),
+                          note: T("Use lowercase text in chat apps like Slack, iMessage, Discord."),
+                          on: bind(\.casualMessaging))
+                ToggleRow(icon: "app.badge", title: T("App-Specific Modes"),
+                          note: T("Adapt AI Cleanup to the app: shell commands in Terminal, code terms in Cursor/VS Code, short messages in Slack, prompts in ChatGPT. Needs AI Cleanup on."),
+                          on: bind(\.appModesEnabled))
                 ToggleRow(icon: "shield", title: T("Privacy Mode"),
                           note: T("Don't keep the audio or the transcript in History."),
                           on: bind(\.privacyMode))
@@ -272,6 +394,37 @@ struct SettingsView: View {
                 .padding(.vertical, 2)
             }
 
+            Section(T("AI Cleanup")) {
+                ToggleRow(icon: "sparkles", title: T("AI Cleanup"),
+                          note: T("Send the transcript to OpenRouter to fix punctuation and typos. Off while Privacy Mode is on."),
+                          on: bind(\.aiEnabled))
+
+                HStack {
+                    Text(T("API key")).frame(width: 90, alignment: .leading)
+                    SecureField("sk-or-v1-…", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { Keychain.set(apiKey) }
+                    Button(T("Save")) { Keychain.set(apiKey) }
+                }
+                Link(T("Get a free key at openrouter.ai"),
+                     destination: URL(string: "https://openrouter.ai/keys")!)
+                    .font(.caption)
+
+                // The saved model may have been retired — keep it listed.
+                DropRow(title: T("Model"),
+                        options: (models_ai.contains(s.cfg.aiModel) ? models_ai : [s.cfg.aiModel] + models_ai)
+                            .map { ($0, $0) },
+                        selection: bindStr(\.aiModel))
+
+                HStack {
+                    Button(T("Test")) { Keychain.set(apiKey); test() }
+                        .disabled(testing || apiKey.isEmpty)
+                    if testing { ProgressView().controlSize(.small) }
+                    Text(testResult).font(.caption).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Section {
                 Button(T("Reset to Defaults")) {
                     let keep = (s.cfg.model, s.cfg.whisper)
@@ -284,6 +437,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 420, minHeight: 360)
+        .onAppear { fetchFreeModels { models_ai = $0 } }
         .onDisappear { Settings.shared.capturingSlot = 0 }
     }
 }
