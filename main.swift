@@ -398,7 +398,9 @@ private func axString(_ el: AXUIElement, _ attr: String) -> String? {
 func selectedText() -> String? {
     if let s = focusedElement().flatMap({ axString($0, kAXSelectedTextAttribute as String) })?
         .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty { return s }
-    return copiedSelection()
+    let copied = copiedSelection()
+    log("selection: ax=nil clipboard=\(copied?.count.description ?? "nil")")
+    return copied
 }
 
 /// Electron apps (VS Code, Slack, Discord) don't publish kAXSelectedTextAttribute,
@@ -759,6 +761,9 @@ final class App: NSObject, NSApplicationDelegate {
         targetApp = NSWorkspace.shared.frontmostApplication?.localizedName
         // Same reason: the selection and the field contents must be read before we type.
         editing = cfg.selectToEdit ? selectedText() : nil
+        log("begin lang=\(lang) app=\(targetApp ?? "?") "
+            + "selectToEdit=\(cfg.selectToEdit) selection=\(editing?.count.description ?? "nil") "
+            + "streaming=\(cfg.streaming) ai=\(cfg.aiEnabled)")
         context = cfg.deepContext ? screenContext() : nil
         // Streaming needs one fixed language; with auto-detect whisper can flip
         // language between chunks, and editing needs the whole instruction at once.
@@ -777,7 +782,7 @@ final class App: NSObject, NSApplicationDelegate {
         } catch {
             setIcon("exclamationmark.triangle")
             HUD.shared.hide()
-            NSLog("record failed: \(error.localizedDescription)")
+            log("record failed: \(error.localizedDescription)")
         }
     }
 
@@ -789,6 +794,7 @@ final class App: NSObject, NSApplicationDelegate {
             HUD.shared.show(.streaming, lang: lang)
         }
         let text = transcribe(wav, lang)
+        log("stream chunk → \(text.isEmpty ? "<empty>" : text)")
         DispatchQueue.main.async {
             Stream.shared.busy = false
             if self.cfg.privacyMode { try? FileManager.default.removeItem(at: wav) }
@@ -838,7 +844,7 @@ final class App: NSObject, NSApplicationDelegate {
                 do { text = try aiEdit(selection: sel, instruction: text, model: self.cfg.aiModel) }
                 catch {
                     // Pasting the raw instruction would eat the selection — do nothing instead.
-                    NSLog("select-to-edit failed: \(error.localizedDescription)")
+                    log("select-to-edit FAILED: \(error.localizedDescription)")
                     DispatchQueue.main.async {
                         self.setIcon("mic"); HUD.shared.hide()
                         self.alert(T("Edit failed"), error.localizedDescription)
@@ -849,7 +855,7 @@ final class App: NSObject, NSApplicationDelegate {
             } else if self.cfg.aiEnabled && !self.cfg.privacyMode && !text.isEmpty {
                 // Privacy Mode means nothing leaves the Mac, so it wins over AI cleanup.
                 do { text = try aiClean(text, model: self.cfg.aiModel, prompt: self.promptForApp()) }
-                catch { NSLog("ai cleanup skipped: \(error.localizedDescription)") }
+                catch { log("ai cleanup skipped: \(error.localizedDescription)") }
             }
             let final = self.editing == nil ? self.casual(text) : text
             DispatchQueue.main.async {
@@ -871,6 +877,7 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func transcribe(_ wav: URL, _ lang: String) -> String {
+        log("transcribe \(wav.lastPathComponent) lang=\(lang) context=\(self.context?.count ?? 0)")
         guard FileManager.default.fileExists(atPath: cfg.model) else {
             DispatchQueue.main.async {
                 self.alert(T("Model missing"), uiLang() == "vi"
@@ -897,7 +904,9 @@ final class App: NSObject, NSApplicationDelegate {
         }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        return cleanTranscript(String(data: data, encoding: .utf8) ?? "")
+        let text = cleanTranscript(String(data: data, encoding: .utf8) ?? "")
+        log("whisper lang=\(lang) exit=\(p.terminationStatus) → \(text.isEmpty ? "<empty>" : text)")
+        return text
     }
 }
 

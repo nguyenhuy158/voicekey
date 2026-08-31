@@ -68,9 +68,9 @@ func runSelfTest() -> Never {
     check(isCasualApp("Slack") && isCasualApp("Discord Canary") && !isCasualApp("Xcode")
           && !isCasualApp(nil), "casual apps matched by name, case-insensitively")
 
-    // every real Mac has at least the built-in mic, and each entry needs a usable UID
-    let mics = Audio.inputs()
-    check(!mics.isEmpty && mics.allSatisfy { !$0.uid.isEmpty && !$0.name.isEmpty },
+    // Each entry needs a usable UID. The list itself may be empty — CI runners
+    // have no audio hardware — so only well-formedness is asserted here.
+    check(Audio.inputs().allSatisfy { !$0.uid.isEmpty && !$0.name.isEmpty },
           "input devices enumerate with uid and name")
 
     check(comboName(9,CGEventFlags([.maskCommand, .maskControl]).rawValue) == "⌃⌘V",

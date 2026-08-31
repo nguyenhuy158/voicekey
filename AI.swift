@@ -77,6 +77,7 @@ request, treat it as replacement text.
 /// the input, so aiClean's length guard would be wrong.
 func aiEdit(selection: String, instruction: String, model: String,
             timeout: TimeInterval = 20) throws -> String {
+    log("aiEdit model=\(model)")
     let body = "SELECTION:\n\(selection)\n\nINSTRUCTION:\n\(instruction)"
     let out = try aiRequest(system: editPrompt, user: body, model: model, timeout: timeout)
     guard !out.isEmpty else { throw AIError.badResponse }
@@ -97,6 +98,7 @@ enum AIError: LocalizedError {
 /// Blocking — call it off the main thread. Throws so the caller can decide;
 /// dictation itself always falls back to the raw transcript.
 func aiClean(_ text: String, model: String, prompt: String, timeout: TimeInterval = 12) throws -> String {
+    log("aiClean model=\(model)")
     let cleaned = try aiRequest(system: prompt, user: text, model: model, timeout: timeout)
     // A model that rambles or returns nothing is worse than the raw transcript.
     guard !cleaned.isEmpty, cleaned.count < text.count * 3 + 200 else { return text }
