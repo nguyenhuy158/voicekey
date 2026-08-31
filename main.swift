@@ -36,6 +36,8 @@ struct Config: Codable {
     var playSounds = true
     var avoidClipboardHistory = true
     var privacyMode = false
+    /// Double-tap a talk key to latch recording on; tap again to stop.
+    var doubleTapLatch = true
     /// "system" (follow macOS), "en" or "vi".
     var uiLanguage = "system"
 
@@ -70,6 +72,7 @@ struct Config: Codable {
         playSounds = f(.playSounds, d.playSounds)
         avoidClipboardHistory = f(.avoidClipboardHistory, d.avoidClipboardHistory)
         privacyMode = f(.privacyMode, d.privacyMode)
+        doubleTapLatch = f(.doubleTapLatch, d.doubleTapLatch)
         uiLanguage = f(.uiLanguage, d.uiLanguage)
     }
 
@@ -115,6 +118,24 @@ func comboName(_ code: Int64, _ flags: UInt64) -> String {
     if f.contains(.maskShift) { s += "⇧" }
     if f.contains(.maskCommand) { s += "⌘" }
     return s + (keyNames[code] ?? "key \(code)")
+}
+
+// ---------- tap vs hold ----------
+
+/// A press shorter than this is a tap, not a hold.
+let tapMax = 0.35
+/// Two taps closer together than this latch recording on.
+let doubleTapGap = 0.45
+
+enum TapAction { case transcribe, latch, discard }
+
+/// What releasing a talk key should do. `held` is how long it was down, `sinceLastTap`
+/// how long ago the previous short tap ended (nil = there wasn't one).
+func tapAction(latched: Bool, enabled: Bool, held: Double, sinceLastTap: Double?) -> TapAction {
+    if latched { return .transcribe }            // the tap that ends a latched clip
+    if !enabled || held >= tapMax { return .transcribe }
+    if let gap = sinceLastTap, gap < doubleTapGap { return .latch }
+    return .discard
 }
 
 // ---------- recorder ----------
@@ -236,6 +257,10 @@ final class App: NSObject, NSApplicationDelegate {
     var tap: CFMachPort?
     var heldCode: Int64?         // the key currently held down
     var handsFreeLang: String?   // non-nil while a hands-free clip is running
+    /// Key that double-tap latched recording on — the next tap of it stops the clip.
+    var latchedCode: Int64?
+    var pressedAt: Date?         // when the current press started, to tell tap from hold
+    var lastTapAt: Date?         // when the previous short tap ended
     var lastTranscript = ""
     var targetApp: String?
 
@@ -426,15 +451,19 @@ final class App: NSObject, NSApplicationDelegate {
         guard let lang = cfg.lang(for: code), handsFreeLang == nil else {
             return Unmanaged.passUnretained(event)
         }
-        // Ignore the other key while one is already held, so the language can't switch mid-clip.
+        // Ignore the other key while one is already held or latched, so the language
+        // can't switch mid-clip.
         guard heldCode == nil || heldCode == code else { return Unmanaged.passUnretained(event) }
+        guard latchedCode == nil || latchedCode == code else { return Unmanaged.passUnretained(event) }
 
         if let flag = modifierFlags[code] {
             guard type == .flagsChanged else { return Unmanaged.passUnretained(event) }
             let pressed = event.flags.contains(flag)
             if pressed != (heldCode == code) {
                 heldCode = pressed ? code : nil
-                DispatchQueue.main.async { pressed ? self.beginTalk(lang) : self.endTalk(lang) }
+                DispatchQueue.main.async {
+                    pressed ? self.keyPressed(code, lang) : self.keyReleased(code, lang)
+                }
             }
             return Unmanaged.passUnretained(event)   // don't break the modifier for other apps
         }
@@ -442,25 +471,55 @@ final class App: NSObject, NSApplicationDelegate {
         // plain key: swallow it so holding it doesn't spam characters
         if type == .keyDown && heldCode == nil {
             heldCode = code
-            DispatchQueue.main.async { self.beginTalk(lang) }
+            DispatchQueue.main.async { self.keyPressed(code, lang) }
         } else if type == .keyUp {
             heldCode = nil
-            DispatchQueue.main.async { self.endTalk(lang) }
+            DispatchQueue.main.async { self.keyReleased(code, lang) }
         }
         return nil
+    }
+
+    // MARK: press / release
+
+    func keyPressed(_ code: Int64, _ lang: String) {
+        guard latchedCode != code else { return }   // latched: the release is what stops it
+        pressedAt = Date()
+        beginTalk(lang)
+    }
+
+    func keyReleased(_ code: Int64, _ lang: String) {
+        let held = pressedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        let gap = lastTapAt.map { Date().timeIntervalSince($0) }
+        pressedAt = nil
+
+        switch tapAction(latched: latchedCode == code, enabled: cfg.doubleTapLatch,
+                         held: held, sinceLastTap: gap) {
+        case .transcribe:              // a real hold, or the tap that ends a latch
+            latchedCode = nil
+            lastTapAt = nil
+            endTalk(lang)
+        case .latch:                   // second tap: the clip this press started keeps running
+            lastTapAt = nil
+            latchedCode = code
+        case .discard:                 // first tap — too short to hold speech; wait for a second
+            lastTapAt = Date()
+            cancelTalk(silent: true)
+        }
     }
 
     // MARK: talk
 
     var isTalking: Bool { rec.isRecording }
 
-    func cancelTalk() {
+    func cancelTalk(silent: Bool = false) {
         handsFreeLang = nil
         heldCode = nil
+        latchedCode = nil
+        pressedAt = nil
         if let wav = rec.stop() { try? FileManager.default.removeItem(at: wav) }
         setIcon("mic")
         HUD.shared.hide()
-        if cfg.playSounds { NSSound(named: "Funk")?.play() }
+        if cfg.playSounds && !silent { NSSound(named: "Funk")?.play() }
     }
 
     func beginTalk(_ lang: String) {

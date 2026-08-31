@@ -97,6 +97,9 @@ let viStrings: [String: String] = [
     "Paste Last Transcript": "Dán bản ghi gần nhất",
     "Paste the previous result again, without re-recording.":
         "Dán lại kết quả trước đó mà không cần ghi âm lại.",
+    "Double-Tap to Latch": "Nhấn đúp để ghi liên tục",
+    "Double-tap a talk key to keep recording hands-free; tap once more to finish.":
+        "Nhấn đúp phím nói để ghi rảnh tay; nhấn thêm một lần nữa để kết thúc.",
     "Cancel with Escape": "Huỷ bằng phím Escape",
     "Throw away the clip in progress — nothing is transcribed or pasted.":
         "Bỏ đoạn đang ghi — không chuyển văn bản, không dán.",

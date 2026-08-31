@@ -186,6 +186,9 @@ struct SettingsView: View {
                 BindRow(icon: "doc.on.clipboard", title: T("Paste Last Transcript"),
                         note: T("Paste the previous result again, without re-recording."),
                         slot: 4, label: comboName(s.cfg.pasteLastKey, s.cfg.pasteLastFlags))
+                ToggleRow(icon: "hand.tap", title: T("Double-Tap to Latch"),
+                          note: T("Double-tap a talk key to keep recording hands-free; tap once more to finish."),
+                          on: bind(\.doubleTapLatch))
                 ToggleRow(icon: "xmark.circle", title: T("Cancel with Escape"),
                           note: T("Throw away the clip in progress — nothing is transcribed or pasted."),
                           on: bind(\.cancelWithEscape))

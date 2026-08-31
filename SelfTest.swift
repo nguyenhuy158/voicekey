@@ -28,7 +28,20 @@ func runSelfTest() -> Never {
     check(c.model == "/m.bin" && c.keyCode == 54, "old config keeps its values")
     check(c.language2 == "vi" && c.playSounds, "missing keys fall back to defaults")
 
-    check(comboName(9, CGEventFlags([.maskCommand, .maskControl]).rawValue) == "⌃⌘V",
+    // double-tap latch: tap → discard, quick second tap → latch, next tap → transcribe
+    check(tapAction(latched: false, enabled: true, held: 0.1, sinceLastTap: nil) == .discard,
+          "a lone short tap is thrown away")
+    check(tapAction(latched: false, enabled: true, held: 0.1, sinceLastTap: 0.2) == .latch,
+          "a second tap inside the gap latches recording on")
+    check(tapAction(latched: false, enabled: true, held: 0.1, sinceLastTap: 1.0) == .discard,
+          "a slow second tap doesn't latch")
+    check(tapAction(latched: true, enabled: true, held: 0.1, sinceLastTap: 0.2) == .transcribe,
+          "tapping a latched key finishes the clip")
+    check(tapAction(latched: false, enabled: true, held: 2.0, sinceLastTap: 0.2) == .transcribe,
+          "a real hold still transcribes, even right after a tap")
+    check(tapAction(latched: false, enabled: false, held: 0.1, sinceLastTap: 0.2) == .transcribe,
+          "with latching off every release transcribes")
+    check(comboName(9,CGEventFlags([.maskCommand, .maskControl]).rawValue) == "⌃⌘V",
           "combo renders modifiers in Apple's order")
 
     check(shortDuration(45) == "45s" && shortDuration(511) == "8m 31s"
