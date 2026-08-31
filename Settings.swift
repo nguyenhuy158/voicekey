@@ -201,11 +201,12 @@ struct SettingsView: View {
         return Array(Set(found + [s.cfg.model])).sorted()
     }
 
-    /// Auto-detect can change language between chunks, so streaming is off there.
+    /// Auto-detect can change language between chunks, so a key set to Auto never
+    /// streams — but the other key still can, so this is per-key, not global.
     var streamingNote: String {
-        s.cfg.language == "auto"
-            ? T("Streaming is disabled when language is set to Auto-detect.")
-            : T("Type each sentence as you pause, instead of all of it on release.")
+        let auto = [s.cfg.language, s.cfg.language2].contains("auto")
+        return T("Type each sentence as you pause, instead of all of it on release.")
+            + (auto ? " " + T("Keys set to Auto-detect stay non-streaming.") : "")
     }
 
     @State private var mics = Audio.inputs()
@@ -359,7 +360,7 @@ struct SettingsView: View {
                 DropRow(icon: "water.waves", title: T("Streaming Mode"), note: streamingNote,
                         options: [("never", T("Never")), ("auto", T("Auto"))],
                         selection: bindStr(\.streaming),
-                        enabled: s.cfg.language != "auto")
+                        enabled: [s.cfg.language, s.cfg.language2] != ["auto", "auto"])
 
                 ToggleRow(icon: "bubble.left", title: T("Casual Messaging"),
                           note: T("Use lowercase text in chat apps like Slack, iMessage, Discord."),
