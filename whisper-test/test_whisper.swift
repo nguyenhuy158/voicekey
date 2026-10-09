@@ -25,7 +25,7 @@ let modelCandidates = [
     "\(homeBrewModels)/ggml-small.en.bin",
     "\(homeBrewModels)/ggml-medium.en.bin",
     "\(home)/models/ggml-base.en.bin",
-    "\(home)/Documents/macos-app/whisper-test/ggml-base.en.bin",
+    "\(home)/Documents/personal-projects/voicekey/whisper-test/ggml-base.en.bin",
     "./ggml-base.en.bin",
 ].compactMap { $0 }
 

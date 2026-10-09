@@ -38,7 +38,7 @@ Start with `base.en`. If accuracy is bad, upgrade to `small.en` or `medium.en`.
 ## Run the test
 
 ```bash
-cd /Users/huyntq/Documents/macos-app/whisper-test
+cd ~/Documents/personal-projects/voicekey/whisper-test
 ./test_whisper.swift          # 5 second recording (default)
 ./test_whisper.swift 10       # 10 second recording
 ```
@@ -73,7 +73,7 @@ If even `medium.en` struggles with technical terms, you may need to fine-tune.
 
 **"Model not found"** → Run the download step above, or move the model to one of these paths:
 - `~/whisper.cpp/models/`
-- `~/Documents/macos-app/whisper-test/`
+- `~/Documents/personal-projects/voicekey/whisper-test/`
 - Same dir as the script
 
 **"Whisper binary not found"** → Run `brew install whisper-cpp` or `make` in whisper.cpp dir.
